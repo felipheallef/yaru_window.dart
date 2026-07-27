@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/widgets.dart';
+import 'package:multiview_desktop/multiview_desktop.dart';
 import 'package:yaru_window_platform_interface/yaru_window_platform_interface.dart';
 
 /// Provides access to the closest top-level window instance that encloses the
@@ -16,9 +16,12 @@ class YaruWindow {
   /// Returns the closest top-level window instance that encloses the given
   /// context.
   static YaruWindowInstance of(BuildContext context) {
-    const id = 0; // View.of(context).windowId;
-    // ignore: avoid_redundant_argument_values
-    return _instance(id);
+    try {
+      return _instance(MultiViewDesktop.getIdByContext(context));
+    } on Object catch (_) {
+      // ignore: avoid_redundant_argument_values
+      return _instance(0);
+    }
   }
 
   /// Closes the window.

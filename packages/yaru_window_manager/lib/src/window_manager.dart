@@ -2,140 +2,169 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:window_manager/window_manager.dart';
+import 'package:multiview_desktop/multiview_desktop.dart';
 import 'package:yaru_window_platform_interface/yaru_window_platform_interface.dart';
 
+/// A multiview_desktop-based implementation of [YaruWindowPlatform] for
+/// macOS and Windows.
 class YaruWindowManager extends YaruWindowPlatform {
-  YaruWindowManager([@visibleForTesting this.__wm]);
+  YaruWindowManager([@visibleForTesting this._resolve]);
 
   static void registerWith() {
     YaruWindowPlatform.instance = YaruWindowManager();
   }
 
-  _YaruWindowStatesListener? __statesListener;
-  _YaruWindowStatesListener get _listener =>
-      __statesListener ??= _YaruWindowStatesListener(_wm);
+  final MultiViewDesktop Function(int id)? _resolve;
 
-  _YaruWindowOnCloseListener? __closeListener;
-  _YaruWindowOnCloseListener get _closeListener =>
-      __closeListener ??= _YaruWindowOnCloseListener(_wm);
+  MultiViewDesktop _window(int id) {
+    final resolve = _resolve;
+    if (resolve != null) return resolve(id);
 
-  WindowManager? __wm;
-  WindowManager get _wm => __wm ??= WindowManager.instance;
+    // Yaru historically hardcodes id 0 for the primary window.
+    if (id == 0) {
+      final anchor = MultiViewDesktop.getAnchorId();
+      if (anchor != null) {
+        return MultiViewDesktop.fromId(anchor);
+      }
+    }
+    return MultiViewDesktop.fromId(id);
+  }
 
-  @override
-  Future<void> init(int id) => _wm.invokeMethod(_wm.ensureInitialized);
+  final _listeners = <int, _YaruWindowStatesListener>{};
+  final _closeListeners = <int, _YaruWindowOnCloseListener>{};
 
-  @override
-  Future<void> close(int id) => _wm.invokeMethod(_wm.close);
-  @override
-  Future<void> drag(int id) => _wm.invokeMethod(_wm.startDragging);
-  @override
-  Future<void> fullscreen(int id) => _wm.invokeSetter(_wm.setFullScreen, true);
-  @override
-  Future<void> hide(int id) => _wm.invokeMethod(_wm.hide);
-  @override
-  Future<void> hideTitle(int id) =>
-      _wm.invokeSetter(_wm.setTitleBarStyle, TitleBarStyle.hidden);
-  @override
-  Future<void> maximize(int id) => _wm.invokeMethod(_wm.maximize);
-  @override
-  Future<void> minimize(int id) => _wm.invokeMethod(_wm.minimize);
-  @override
-  Future<void> restore(int id) async {
-    if (await _wm.invokeGetter(_wm.isFullScreen, orElse: false)) {
-      return _wm.invokeSetter(_wm.setFullScreen, false);
-    } else if (await _wm.invokeGetter(_wm.isMaximized, orElse: false)) {
-      return _wm.invokeMethod(_wm.unmaximize);
-    } else if (await _wm.invokeGetter(_wm.isMinimized, orElse: false)) {
-      return _wm.invokeMethod(_wm.restore);
+  _YaruWindowStatesListener _listenerFor(int id) =>
+      _listeners.putIfAbsent(id, () => _YaruWindowStatesListener(_window(id)));
+
+  _YaruWindowOnCloseListener _closeListenerFor(int id) => _closeListeners
+      .putIfAbsent(id, () => _YaruWindowOnCloseListener(_window(id)));
+
+  Future<void> _invoke(Future<void> Function() method) async {
+    try {
+      await method();
+    } on MissingPluginException catch (_) {
+    } on StateError catch (_) {
+      // Multi-view not ready yet (startup / teardown).
     }
   }
 
-  @override
-  Future<void> show(int id) => _wm.invokeMethod(_wm.show);
-  @override
-  Future<void> showMenu(int id) => _wm.invokeMethod(_wm.popUpWindowMenu);
-  @override
-  Future<void> showTitle(int id) =>
-      _wm.invokeSetter(_wm.setTitleBarStyle, TitleBarStyle.normal);
-
-  @override
-  Future<void> setBackground(int id, Color color) =>
-      _wm.invokeSetter(_wm.setBackgroundColor, color);
-  @override
-  Future<void> setBrightness(int id, Brightness brightness) =>
-      _wm.invokeSetter(_wm.setBrightness, brightness);
-  @override
-  Future<void> setTitle(int id, String title) => _wm
-      .invokeSetter(_wm.setTitle, title)
-      .then((_) => _listener._updateState());
-
-  @override
-  Future<void> setMinimizable(int id, bool minimizable) => _wm
-      .invokeSetter(_wm.setMinimizable, minimizable)
-      .then((_) => _listener._updateState());
-
-  @override
-  Future<void> setMaximizable(int id, bool maximizable) => _wm
-      .invokeSetter(_wm.setMaximizable, maximizable)
-      .then((_) => _listener._updateState());
-
-  @override
-  Future<void> setClosable(int id, bool closable) => _wm
-      .invokeSetter(_wm.setClosable, closable)
-      .then((_) => _listener._updateState());
-
-  @override
-  Future<YaruWindowState> state(int id) => _wm.state();
-  @override
-  Stream<YaruWindowState> states(int id) => _listener.states();
-
-  @override
-  Future<void> onClose(int id, FutureOr<bool> Function() handler) {
-    return _closeListener.addCloseHandler(handler);
-  }
-}
-
-extension _YaruWindowManagerX on WindowManager {
-  Future<T> invokeGetter<T>(
-    Future<T> Function() getter, {
-    required T orElse,
-  }) async {
+  Future<T> _get<T>(Future<T> Function() getter, {required T orElse}) async {
     try {
       return await getter();
     } on MissingPluginException catch (_) {
       return orElse;
+    } on StateError catch (_) {
+      return orElse;
     }
   }
 
-  Future<void> invokeSetter<T>(
-    Future<void> Function(T value) setter,
-    T value,
-  ) async {
-    try {
-      return await setter(value);
-    } on MissingPluginException catch (_) {}
+  @override
+  Future<void> init(int id) async {
+    // multiview_desktop owns engine/window lifecycle; nothing to init.
   }
 
-  Future<void> invokeMethod(Future<void> Function() method) async {
-    try {
-      return await method();
-    } on MissingPluginException catch (_) {}
+  @override
+  Future<void> close(int id) => _invoke(_window(id).closeWindow);
+
+  @override
+  Future<void> drag(int id) => _invoke(_window(id).startDragging);
+
+  @override
+  Future<void> fullscreen(int id) =>
+      _invoke(() => _window(id).setFullScreen(true));
+
+  @override
+  Future<void> hide(int id) => _invoke(_window(id).hide);
+
+  @override
+  Future<void> hideTitle(int id) => _invoke(
+    () => _window(id).setTitleBarStyle(TitleBarStyle.hidden),
+  );
+
+  @override
+  Future<void> maximize(int id) => _invoke(_window(id).maximize);
+
+  @override
+  Future<void> minimize(int id) => _invoke(_window(id).minimize);
+
+  @override
+  Future<void> restore(int id) async {
+    final win = _window(id);
+    if (await _get(win.isFullScreen, orElse: false)) {
+      return _invoke(() => win.setFullScreen(false));
+    } else if (await _get(win.isMaximized, orElse: false)) {
+      return _invoke(win.unmaximize);
+    } else if (await _get(win.isMinimized, orElse: false)) {
+      return _invoke(win.restore);
+    }
   }
 
-  Future<YaruWindowState> state() {
+  @override
+  Future<void> show(int id) => _invoke(_window(id).show);
+
+  @override
+  Future<void> showMenu(int id) => _invoke(_window(id).popUpWindowMenu);
+
+  @override
+  Future<void> showTitle(int id) => _invoke(
+    () => _window(id).setTitleBarStyle(TitleBarStyle.normal),
+  );
+
+  @override
+  Future<void> setBackground(int id, Color color) =>
+      _invoke(() => _window(id).setBackgroundColor(color));
+
+  @override
+  Future<void> setBrightness(int id, Brightness brightness) =>
+      _invoke(() => _window(id).setBrightness(brightness));
+
+  @override
+  Future<void> setTitle(int id, String title) => _invoke(() async {
+    await _window(id).setTitle(title);
+    await _listenerFor(id)._updateState();
+  });
+
+  @override
+  Future<void> setMinimizable(int id, bool minimizable) => _invoke(() async {
+    await _window(id).setMinimizable(minimizable);
+    await _listenerFor(id)._updateState();
+  });
+
+  @override
+  Future<void> setMaximizable(int id, bool maximizable) => _invoke(() async {
+    await _window(id).setMaximizable(maximizable);
+    await _listenerFor(id)._updateState();
+  });
+
+  @override
+  Future<void> setClosable(int id, bool closable) => _invoke(() async {
+    await _window(id).setClosable(closable);
+    await _listenerFor(id)._updateState();
+  });
+
+  @override
+  Future<YaruWindowState> state(int id) => _stateFor(_window(id));
+
+  @override
+  Stream<YaruWindowState> states(int id) => _listenerFor(id).states();
+
+  @override
+  Future<void> onClose(int id, FutureOr<bool> Function() handler) {
+    return _closeListenerFor(id).addCloseHandler(handler);
+  }
+
+  Future<YaruWindowState> _stateFor(MultiViewDesktop win) {
     return Future.wait([
-      invokeGetter(isFocused, orElse: true),
-      invokeGetter(isClosable, orElse: true),
-      invokeGetter(isFullScreen, orElse: false),
-      invokeGetter(isMaximizable, orElse: true),
-      invokeGetter(isMaximized, orElse: false),
-      invokeGetter(isMinimizable, orElse: true),
-      invokeGetter(isMinimized, orElse: false),
-      invokeGetter(isMovable, orElse: true),
-      invokeGetter(getTitle, orElse: ''),
-      invokeGetter(isVisible, orElse: true),
+      _get(win.isFocused, orElse: true),
+      _get(win.isClosable, orElse: true),
+      _get(win.isFullScreen, orElse: false),
+      _get(win.isMaximizable, orElse: true),
+      _get(win.isMaximized, orElse: false),
+      _get(win.isMinimizable, orElse: true),
+      _get(win.isMinimized, orElse: false),
+      _get(win.isMovable, orElse: true),
+      _get(win.getTitle, orElse: ''),
+      _get(win.isVisible, orElse: true),
     ]).then((values) {
       final active = values[0] as bool;
       final closable = values[1] as bool;
@@ -164,24 +193,36 @@ extension _YaruWindowManagerX on WindowManager {
   }
 }
 
-class _YaruWindowStatesListener extends WindowListener {
-  _YaruWindowStatesListener(this._wm);
+class _YaruWindowStatesListener implements WindowListenerCallbacks {
+  _YaruWindowStatesListener(this._win);
 
-  final WindowManager _wm;
+  final MultiViewDesktop _win;
   StreamController<YaruWindowState>? _controller;
+  bool _registered = false;
 
   Stream<YaruWindowState> states() async* {
     _controller ??= StreamController<YaruWindowState>.broadcast(
-      onListen: () => _wm.addListener(this),
-      onCancel: () => _wm.removeListener(this),
+      onListen: () {
+        if (!_registered) {
+          MultiViewDesktop.addListenerForView(_win.id, this);
+          _registered = true;
+        }
+      },
+      onCancel: () {
+        if (_registered) {
+          MultiViewDesktop.removeListenerForView(_win.id, this);
+          _registered = false;
+        }
+      },
     );
     yield* _controller!.stream;
   }
 
-  Future<void> close() async => await _controller?.close();
-
   Future<void> _updateState() async {
-    _controller?.add(await _wm.state());
+    final platform = YaruWindowPlatform.instance;
+    if (platform is YaruWindowManager) {
+      _controller?.add(await platform._stateFor(_win));
+    }
   }
 
   @override
@@ -200,23 +241,31 @@ class _YaruWindowStatesListener extends WindowListener {
   void onWindowMinimize() => _updateState();
   @override
   void onWindowRestore() => _updateState();
+  @override
+  void onWindowClose() {}
+  @override
+  void onWindowResize() {}
+  @override
+  void onWindowResized() {}
+  @override
+  void onWindowMove() {}
+  @override
+  void onWindowMoved() {}
+  @override
+  void onWindowEvent(String eventName) {}
 }
 
-class _YaruWindowOnCloseListener extends WindowListener {
-  _YaruWindowOnCloseListener(this._wm) {
-    _wm.addListener(this);
+class _YaruWindowOnCloseListener implements WindowListenerCallbacks {
+  _YaruWindowOnCloseListener(this._win) {
+    MultiViewDesktop.addListenerForView(_win.id, this);
   }
 
-  final WindowManager _wm;
-
-  @override
-  void onWindowClose() => _handleClose();
-
+  final MultiViewDesktop _win;
   final _onCloseHandlers = <FutureOr<bool> Function()>[];
 
-  Future<void> addCloseHandler(FutureOr<bool> Function() handler) {
+  Future<void> addCloseHandler(FutureOr<bool> Function() handler) async {
     _onCloseHandlers.add(handler);
-    return _wm.setPreventClose(true);
+    await _win.setPreventClose(true);
   }
 
   Future<void> _handleClose() async {
@@ -225,7 +274,37 @@ class _YaruWindowOnCloseListener extends WindowListener {
         return;
       }
     }
-    await _wm.setPreventClose(false);
-    await _wm.close();
+    await _win.setPreventClose(false);
+    await _win.closeWindow();
   }
+
+  @override
+  void onWindowClose() => _handleClose();
+
+  @override
+  void onWindowFocus() {}
+  @override
+  void onWindowBlur() {}
+  @override
+  void onWindowMaximize() {}
+  @override
+  void onWindowUnmaximize() {}
+  @override
+  void onWindowMinimize() {}
+  @override
+  void onWindowRestore() {}
+  @override
+  void onWindowResize() {}
+  @override
+  void onWindowResized() {}
+  @override
+  void onWindowMove() {}
+  @override
+  void onWindowMoved() {}
+  @override
+  void onWindowEnterFullScreen() {}
+  @override
+  void onWindowLeaveFullScreen() {}
+  @override
+  void onWindowEvent(String eventName) {}
 }
